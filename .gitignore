@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 测试临时目录（tests/support.temp_dir 会建在这里）
+tests/_tmp/
+
+# 离线拼接的产物
+_stitched.png
+_e2e*/
+*.log

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipkit"
+version = "0.1.0"
+description = "剪贴板图片工具：拼接 / 裁剪 / 文本公式格式化"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pillow>=10.0",
+    "numpy>=1.24",
+    "pywin32>=306; sys_platform == 'win32'",
+    "pystray>=0.19; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["psutil>=5.9"]        # 只有 tools/bench_imaging.py 需要
+
+[project.scripts]
+clipkit = "clipkit.__main__:main"
+
+[tool.setuptools]
+packages = ["clipkit"]
+
+# 说明：仓库是扁平布局，直接 `python -m clipkit` 就能跑，不必先 pip install。
+# 装的话 `pip install -e .` 之后可以用 `clipkit stitch` 这样的短命令。
