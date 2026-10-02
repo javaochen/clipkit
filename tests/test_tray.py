@@ -95,6 +95,47 @@ class TraySmokeTests(unittest.TestCase):
         app._quit()
         self.assertTrue(app._stop.is_set())
 
+    def test_run_reports_tray_failure_instead_of_traceback(self):
+        """托盘创建失败时要以退出码 1 + 人话结束，而不是抛 traceback 或悄悄活着。
+
+        真实场景：受限环境（沙箱 / 低权限令牌）下 pystray 的
+        ChangeWindowMessageFilterEx 会被拒绝访问——旧写法会让主线程带着
+        traceback 退出，而监听守护线程还在跑，进程既不干净退出、调用方也
+        看不出启动失败。
+        """
+        from unittest import mock
+
+        import clipkit.tray as tray_mod
+
+        _, _, app = self.make_app()
+        logs = []
+        app.log = logs.append
+        app.interval = 0.05
+
+        class BoomIcon:
+            def __init__(self, *args, **kwargs):
+                self.icon = None
+                self.title = ""
+
+            def run(self, *args, **kwargs):
+                raise PermissionError("[WinError 5] 拒绝访问")
+
+            def update_menu(self):
+                pass
+
+            def notify(self, *args, **kwargs):
+                pass
+
+            def stop(self):
+                pass
+
+        with mock.patch.object(tray_mod.pystray, "Icon", BoomIcon):
+            rc = app.run()
+
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("托盘启动失败" in m for m in logs), logs)
+        self.assertTrue(app._stop.is_set(), "必须让监听线程停下来")
+
 
 if __name__ == "__main__":
     unittest.main()

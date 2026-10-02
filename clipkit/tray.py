@@ -31,6 +31,35 @@ MODE_TEXT = {
 }
 
 
+def _relax_pystray_message_filter() -> bool:
+    """把 pystray 的 ChangeWindowMessageFilterEx 换成"失败也不致命"的版本。
+
+    这次调用（pystray/_win32.py 的 _create_window）只是为了让托盘图标在
+    **资源管理器重启后**还能收回来。在受限环境（低完整性令牌 / 沙箱 / 受限令牌）下
+    它会返回 WinError 5 拒绝访问，而 pystray 没有兜底，于是整个托盘起不来、
+    只留一串 traceback。这里包一层：真实调用照做，只在被拒时降级——
+    图标照常可用，代价仅是 Explorer 重启后可能不再自动回来。
+    """
+    try:
+        from pystray._util import win32 as pwin32
+    except Exception:
+        return False
+
+    original = getattr(pwin32, "ChangeWindowMessageFilterEx", None)
+    if original is None or getattr(original, "_clipkit_tolerant", False):
+        return False
+
+    def tolerant(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except OSError:      # PermissionError 是 OSError 子类
+            return None
+
+    tolerant._clipkit_tolerant = True
+    pwin32.ChangeWindowMessageFilterEx = tolerant
+    return True
+
+
 class TrayApp:
     def __init__(self, monitor: ClipboardMonitor, *, interval: float = 0.25,
                  log=None, notify: bool = True):
@@ -165,6 +194,7 @@ class TrayApp:
     # ------------------------------------------------------------ 运行
 
     def run(self) -> int:
+        _relax_pystray_message_filter()
         self.icon = pystray.Icon("clipkit", self._icon_image(), self._title(), self._menu())
         self._sig = None
         self._stop.clear()
@@ -174,8 +204,21 @@ class TrayApp:
         self._log(f"  图片模式={MODE_TEXT[self.monitor.image_mode]}，"
                   f"公式格式化={'开' if self.monitor.text_enabled else '关'}")
 
-        self.icon.run()   # 阻塞，直到 icon.stop()
+        try:
+            self.icon.run()   # 阻塞，直到 icon.stop()
+        except Exception as e:  # noqa: BLE001 - 托盘起不来要给人话，而不是一串 traceback
+            self._stop.set()    # 关键：停掉监听线程，否则"主线程死了、守护线程还活着"
+            if self._thread is not None:
+                self._thread.join(timeout=1.0)
+            self._log(f"[!] 托盘启动失败：{type(e).__name__}: {e}")
+            self._log("    图标没能创建，程序以退出码 1 结束（调用方据此判定启动失败）。"
+                      "受限环境（沙箱 / 低权限令牌）下系统会拒绝托盘相关调用，"
+                      "请改用普通控制台运行；离线处理可用 python -m clipkit simulate <目录>。")
+            return 1
+
         self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
         return 0
 
     def _loop(self) -> None:

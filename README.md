@@ -121,16 +121,24 @@ python tools/bench_imaging.py --compare "..\clip2line_cut&$.py"
 
 ## 与旧文件的关系
 
-`copy_images.py`、`clip2line_cut&$.py` 保持原样，**没有改动、也没有删除**。验证新版没问题后，
-把 `launcher.py` 的目标换成新版即可：
+`copy_images.py`、`clip2line_cut&$.py` 保持原样，**没有改动、也没有删除**，但已经**不再由
+launcher 启动**——`launcher.py` 的对应目标换成了本程序：
 
 ```python
-TARGETS_RAW = [
-    ("clip", "clipkit"),      # 需要给 launcher 加"带参数启动"支持（--mode stitch 等）
-]
+("clip", ["-m", "clipkit", "stitch"], "clipkit"),   # → python -u -m clipkit stitch
 ```
 
-**注意**：试用期间不要让新旧同时常驻，否则又会回到"两个程序抢一个剪贴板"的状态。
+配套的冲突防护（两个剪贴板监听程序同时跑会互相吃掉对方的输出）：
+
+```powershell
+python launcher.py status                  # 检测到旧程序在跑会直接告警
+python launcher.py legacy                  # 只看被取代的旧程序
+python launcher.py legacy --takeover       # 停掉它们
+python launcher.py start clip --takeover   # 启动 clip 时顺手接管
+```
+
+确认新版稳定后可以把两个旧文件归档；`tests/test_legacy_equivalence.py` 会在它们消失后
+自动跳过。
 
 ## 已知边界
 
@@ -139,5 +147,12 @@ TARGETS_RAW = [
   走的是两遍扫描：峰值 ≈ 画布 + 一张图。
 * 写回剪贴板后的 0.9 秒内不处理新内容（防止自己触发自己的回环）。默认值在
   `ClipboardMonitor(self_write_grace=...)` 可调。
+* **受限环境（沙箱 / 低权限令牌）**：pystray 创建托盘窗口时会调
+  `ChangeWindowMessageFilterEx`，这类环境返回"拒绝访问"而 pystray 没有兜底，整个托盘
+  起不来。本程序把这次调用包成"被拒就降级"（它只影响"资源管理器重启后图标能否收回"），
+  因此仍能正常启动；万一还有别处被拒，会打印人话并以**退出码 1** 结束——这样 launcher
+  的存活校验能判定"启动失败"，而不是留一串 traceback 加一个假装活着的进程。
+* 日志编码跟随系统区域设置（中文 Windows 上是 GBK）。用 launcher 的 `--log-dir`
+  收集时，用同编码的控制台查看即可。
 * `pdf_manage/line_cropper.py`、`pdf_reader` 按约定**不改**；它们里面那份裁剪代码是
   旧实现的拷贝，将来想收编可以改成本库的消费者。
