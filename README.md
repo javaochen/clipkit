@@ -31,7 +31,21 @@
 
 拼接模式下**收集期间完全不碰剪贴板**，所以你在收集截图的过程中照常复制文字、粘贴文字都没问题。
 
-文本公式格式化是独立开关，与图片行为互不干扰。图标配色：灰=关闭，绿=即时裁剪，蓝=拼接模式。
+收集完之后**二选一**：
+
+* **完成拼接**（左键点图标，或菜单「完成拼接并复制」）→ 纵向拼成一张并写回剪贴板
+* **分开保存到文件夹**（菜单「分开保存到文件夹」）→ 逐张存成文件，文件名用**每张截图的拍摄时刻**：
+  `2026-10-12_14-03-40.png`；同一秒内的多张自动加序号（`_2`、`_3`…），并且**绝不覆盖**已有文件。
+  保存文件夹在菜单里选一次就会记住（存进配置文件，见"已知边界"）。
+
+文本公式格式化是独立开关，与图片行为互不干扰。**图标只分亮/灭**：任意功能开启就亮（绿），
+全部关闭才灭（灰）——不区分是哪一种功能。
+
+### 参数：开启功能时是否先处理当前剪贴板
+
+`process_on_enable`（默认 **True**）：开启"即时裁剪"或"公式格式化"（包括启动时就带着这些开关）时，
+把**当前剪贴板内容恰好处理一次**。设成 False 则不打扰：只处理开启之后新复制的内容。
+菜单里有勾选项，命令行用 `--process-on-enable` / `--no-process-on-enable`。
 
 ## 为什么"图片监听不影响文本复制"
 
@@ -68,7 +82,10 @@ python -m clipkit                 # 启动托盘（默认图片功能关闭，�
 python -m clipkit stitch          # 启动并直接进入拼接模式
 python -m clipkit crop --text     # 即时裁剪 + 文本公式格式化
 python -m clipkit simulate .\shots -o all.png   # 离线：逐张裁剪后拼接，完全不碰剪贴板
-python -m clipkit doctor          # 环境自检（依赖、剪贴板可读性）
+python -m clipkit simulate .\shots --split      # 离线：逐张裁剪后分开保存（文件名用各图修改时间）
+python -m clipkit stitch --no-process-on-enable # 不打扰剪贴板里已有的内容
+python -m clipkit stitch --save-dir D:\shots    # 指定"分开保存"的目标文件夹（本次运行有效）
+python -m clipkit doctor          # 环境自检（依赖、剪贴板、配置、补丁）
 ```
 
 扁平布局，不需要先安装。也可以用 `pip install -e .` 之后跑 `clipkit stitch`。
@@ -95,17 +112,21 @@ clipkit/
 ├─ clipkit/
 │  ├─ formula.py      纯函数：公式格式化（行为与原实现一致）
 │  ├─ imaging.py      纯函数：去空白裁剪 + 纵向拼接
+│  ├─ exporter.py     分开保存：日期-时分秒文件名、同秒不重名、不覆盖、失败不丢图
+│  ├─ config.py       小配置：保存文件夹 / process_on_enable
 │  ├─ clipboard.py    剪贴板后端：格式位判定 / 无锁序列号 / 读写文本与图片
-│  ├─ monitor.py      状态机：轮询 → 判类型 → 分发（拼接/裁剪/文本）
-│  ├─ tray.py         pystray 托盘：模式单选 + 主操作 + 气泡提示
+│  ├─ monitor.py      状态机：轮询 → 判类型 → 分发（拼接/裁剪/文本）+ 强制处理一次
+│  ├─ tray.py         pystray 托盘：模式单选 + 主操作 + 分开保存 + 气泡提示
+│  ├─ win32_tweaks.py Windows 补丁：托盘起步降级容错 / 右键菜单置顶
 │  └─ __main__.py     CLI：tray / stitch / crop / simulate / doctor
-├─ tests/             55+ 个测试，含与旧实现的逐像素对拍
+├─ tests/             90+ 个测试，含与旧实现的逐像素对拍
 ├─ tools/bench_imaging.py   耗时 / 峰值内存基准（可 --compare 旧实现 A/B）
 └─ requirements.txt
 ```
 
-分层的用意：`formula` / `imaging` 是纯函数，跟 Windows 和剪贴板无关，可以单独测、单独复用；
-`clipboard` 把系统耦合收在一处；`monitor` 只依赖"后端协议"，所以能用假剪贴板把状态机测透。
+分层的用意：`formula` / `imaging` / `exporter` 是纯函数（外加文件 I/O），跟 Windows 和剪贴板
+无关，可以单独测、单独复用；`clipboard` 把系统耦合收在一处；`monitor` 只依赖"后端协议"，
+所以能用假剪贴板把状态机测透；`win32_tweaks` 单独放系统补丁，谁也不许在业务代码里打补丁。
 
 ## 性能与内存
 
@@ -154,5 +175,14 @@ python launcher.py start clip --takeover   # 启动 clip 时顺手接管
   的存活校验能判定"启动失败"，而不是留一串 traceback 加一个假装活着的进程。
 * 日志编码跟随系统区域设置（中文 Windows 上是 GBK）。用 launcher 的 `--log-dir`
   收集时，用同编码的控制台查看即可。
+* **右键菜单置顶**：pystray 弹右键菜单时只调了 `SetForegroundWindow`，菜单本身不是置顶窗口，
+  会被开始菜单（Win 键）这类置顶窗口压住。`win32_tweaks.install_topmost_menu()` 把该图标
+  实例的消息处理包了一层：右键时起一个短命看门狗线程，在菜单出现的瞬间把**属于本进程**的
+  `#32768` 弹出菜单置顶，并在菜单结束后补一条 `WM_NULL`（MSDN 对 TrackPopupMenu 的配套要求）。
+  **这条需要你右键实测确认** —— 自动化测不了真实的窗口层叠；另外如果开始菜单是让菜单"被取消"
+  而不是"被遮住"，那属于 Windows 的前台窗口规则，程序侧无法阻止。
+* **配置文件**：`%APPDATA%\clipkit\config.json`（环境变量 `CLIPKIT_CONFIG` 可覆盖，测试用它）。
+  读不到/写不进去都不拦启动：读失败回落默认值，写失败只在日志里提示"仅本次生效"。
+* 分开保存的图片默认是 PNG（无损，和剪贴板一致），扩展名目前不可配。
 * `pdf_manage/line_cropper.py`、`pdf_reader` 按约定**不改**；它们里面那份裁剪代码是
   旧实现的拷贝，将来想收编可以改成本库的消费者。

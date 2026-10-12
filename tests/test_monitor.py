@@ -13,6 +13,7 @@ import unittest
 
 from clipkit.clipboard import ClipKind
 from clipkit.monitor import ClipboardMonitor, ImageMode
+from tests import support
 from tests.support import FakeClipboard, block, blocks_1280x720, colored
 
 
@@ -237,6 +238,127 @@ class RobustnessTests(MonitorTestBase):
         # 注意：这是"用户真的又复制了一张"，应当被收集（不是回环）
         self.assertEqual(monitor.tick().action, "collected")
         self.assertEqual(len(backend.writes), 1)
+
+
+# ---------------------------------------------------------------- 开启功能时处理当前剪贴板
+
+
+class ProcessOnEnableTests(unittest.TestCase):
+    """参数 process_on_enable：True（默认）时开启功能会恰好处理当前剪贴板一次。"""
+
+    def test_process_current_once_crops_what_is_already_there(self):
+        backend = FakeClipboard()
+        backend.user_copy_image(block(200, 150, (40, 30, 160, 120)))
+        monitor = ClipboardMonitor(backend, image_mode=ImageMode.CROP, log=None)
+
+        r = monitor.process_current_once()
+        self.assertTrue(r.wrote_clipboard)
+        self.assertEqual(backend.writes, [("image", (121, 91))])
+
+    def test_process_current_once_formats_text_already_there(self):
+        backend = FakeClipboard()
+        backend.user_copy_text(r"\(x^2\)")
+        monitor = ClipboardMonitor(backend, text_enabled=True, log=None)
+
+        self.assertTrue(monitor.process_current_once().wrote_clipboard)
+        self.assertEqual(backend.writes, [("text", "$x^2$")])
+
+    def test_process_current_once_does_nothing_when_all_features_off(self):
+        backend = FakeClipboard()
+        backend.user_copy_text(r"\(x^2\)")
+        monitor = ClipboardMonitor(backend, log=None)
+
+        r = monitor.process_current_once()
+        self.assertEqual(r.action, "skipped")
+        self.assertEqual(backend.writes, [])
+
+    def test_startup_tick_processes_when_flag_on(self):
+        backend = FakeClipboard()
+        backend.user_copy_image(block(200, 150, (40, 30, 160, 120)))
+        monitor = ClipboardMonitor(backend, image_mode=ImageMode.CROP,
+                                   process_on_enable=True, log=None)
+
+        self.assertTrue(monitor.startup_tick().wrote_clipboard)
+
+    def test_startup_tick_keeps_baseline_when_flag_off(self):
+        backend = FakeClipboard()
+        backend.user_copy_image(block(200, 150, (40, 30, 160, 120)))
+        monitor = ClipboardMonitor(backend, image_mode=ImageMode.CROP,
+                                   process_on_enable=False, log=None)
+
+        r = monitor.startup_tick()
+        self.assertEqual(r.action, "idle")
+        self.assertEqual(backend.writes, [])
+
+        # 但基线已建立：之后"又复制了内容"（序列号变化）仍会正常处理
+        backend.user_copy_image(block(200, 150, (40, 30, 160, 120)))
+        self.assertTrue(monitor.safe_tick().wrote_clipboard)
+
+    def test_forced_pass_still_respects_self_write_grace(self):
+        backend = FakeClipboard()
+        monitor = ClipboardMonitor(backend, image_mode=ImageMode.CROP,
+                                   self_write_grace=100, log=None)
+        monitor.tick()                       # 先建立基线
+        backend.user_copy_image(block(200, 150, (40, 30, 160, 120)))
+        monitor.tick()                       # 正常处理并写回
+
+        r = monitor.process_current_once()   # 窗口内再强制一次 → 被自写保护挡住
+        self.assertEqual(r.action, "idle")
+        self.assertEqual(len(backend.writes), 1)
+
+
+class SaveSplitTests(unittest.TestCase):
+    """分开保存：逐张写文件、不碰剪贴板、失败不丢图。"""
+
+    def test_saves_collected_shots_and_clears_queue(self):
+        backend = FakeClipboard()
+        monitor = ClipboardMonitor(backend, image_mode=ImageMode.STITCH,
+                                   crop_before_stitch=False, log=None)
+        monitor.tick()
+        for img in (colored(10, 5, (255, 0, 0)), colored(20, 6, (0, 255, 0))):
+            backend.user_copy_image(img)
+            monitor.tick()
+
+        with support.temp_dir() as d:
+            r = monitor.save_shots(d)
+            self.assertEqual(r.action, "saved")
+            self.assertEqual(len(list(d.glob("*.png"))), 2)
+            self.assertEqual(monitor.pending(), 0)
+
+        self.assertEqual(backend.writes, [])      # 保存过程完全不碰剪贴板
+
+    def test_queue_kept_when_folder_cannot_be_created(self):
+        backend = FakeClipboard()
+        monitor = ClipboardMonitor(backend, image_mode=ImageMode.STITCH, log=None)
+        monitor.tick()
+        backend.user_copy_image(colored(10, 5, (255, 0, 0)))
+        monitor.tick()
+
+        with support.temp_dir() as d:
+            blocker = d / "not_a_dir"
+            blocker.write_text("x", encoding="utf-8")   # 父路径是文件 → mkdir 会失败
+            r = monitor.save_shots(blocker / "shots")
+            self.assertEqual(r.action, "error")
+            self.assertEqual(monitor.pending(), 1)      # 图还在队列里
+
+    def test_save_with_empty_queue_is_skipped(self):
+        backend = FakeClipboard()
+        monitor = ClipboardMonitor(backend, log=None)
+        with support.temp_dir() as d:
+            self.assertEqual(monitor.save_shots(d).action, "skipped")
+
+    def test_any_enabled_reflects_text_only(self):
+        backend = FakeClipboard()
+        monitor = ClipboardMonitor(backend, log=None)
+        self.assertFalse(monitor.any_enabled())
+        monitor.text_enabled = True
+        self.assertTrue(monitor.any_enabled())
+
+    def test_any_enabled_reflects_image_modes(self):
+        backend = FakeClipboard()
+        for mode in (ImageMode.CROP, ImageMode.STITCH):
+            monitor = ClipboardMonitor(backend, image_mode=mode, log=None)
+            self.assertTrue(monitor.any_enabled())
 
 
 if __name__ == "__main__":

@@ -4,7 +4,15 @@
     python -m clipkit stitch             启动并直接进入拼接模式
     python -m clipkit crop               启动并直接进入即时裁剪
     python -m clipkit simulate <目录>     离线：逐张裁剪后拼接，完全不碰剪贴板
+    python -m clipkit simulate <目录> --split   离线：逐张裁剪后**分开保存**（文件名用图片的修改时间）
     python -m clipkit doctor             环境自检
+
+常用选项：
+    --save-dir DIR              拼接模式下"分开保存"的目标文件夹（本次运行有效；
+                                托盘菜单里「选择保存文件夹…」选的会被记住）
+    --process-on-enable         True（默认，可从配置改）：开启裁剪 / 公式格式化时，
+                                把当前剪贴板内容恰好处理一次
+    --no-process-on-enable      False：不干扰之前的剪贴板内容，只处理之后的新内容
 
 退出码：0 正常；1 失败；2 用法错误。
 """
@@ -16,9 +24,12 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__
+from PIL import Image
+
+from . import __version__, config, exporter
 from .clipboard import Win32Clipboard
-from .imaging import stitch_image_files
+from .exporter import Shot
+from .imaging import process_page_image, stitch_image_files
 from .monitor import ClipboardMonitor, CropOptions, ImageMode
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff", ".gif"}
@@ -49,10 +60,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--out", type=Path, default=None,
                    help="simulate：输出 PNG（默认 <目录>/_stitched.png）")
     p.add_argument("--no-crop", action="store_true", help="simulate：只拼接不裁剪")
+    p.add_argument("--split", action="store_true",
+                   help="simulate：逐张分开保存（此时 -o 视为输出文件夹）")
     p.add_argument("--text", action="store_true", help="启动时开启文本公式格式化")
     p.add_argument("--interval", type=float, default=0.25, help="剪贴板轮询间隔秒（默认 0.25）")
     p.add_argument("--no-crop-before-stitch", action="store_true", help="拼接前不逐张裁剪")
     p.add_argument("--no-notify", action="store_true", help="关掉托盘气泡提示")
+    p.add_argument("--save-dir", type=Path, default=None,
+                   help="分开保存的目标文件夹（本次运行有效；菜单里选文件夹会记住）")
+    p.add_argument("--process-on-enable", dest="process_on_enable", action="store_true", default=None,
+                   help="开启功能时先处理一次当前剪贴板（默认读配置，配置默认开）")
+    p.add_argument("--no-process-on-enable", dest="process_on_enable", action="store_false",
+                   help="不干扰剪贴板里已有的内容，只处理之后的新内容")
     p.add_argument("--version", action="version", version=f"clipkit {__version__}")
     return p
 
@@ -85,6 +104,19 @@ def cmd_doctor() -> int:
         ok = False
         log(f"  剪贴板    : 读取失败 {type(e).__name__}: {e}")
 
+    settings = config.load()
+    log(f"  配置文件  : {config.config_path()}")
+    log(f"  保存文件夹: {config.save_dir()}")
+    log(f"  开启时先处理当前剪贴板: {'开' if settings['process_on_enable'] else '关'}")
+    if os.name == "nt":
+        try:
+            from . import win32_tweaks
+
+            patches = win32_tweaks.install()
+            log(f"  Windows 兼容补丁: {patches}")
+        except Exception as e:  # noqa: BLE001
+            log(f"  Windows 兼容补丁: 不可用（{type(e).__name__}）")
+
     if ok:
         log("  结论      : 环境正常，可以 python -m clipkit stitch 试用")
     else:
@@ -95,9 +127,9 @@ def cmd_doctor() -> int:
 # ---------------------------------------------------------------- simulate
 
 
-def cmd_simulate(paths, out: Path | None, crop: bool) -> int:
+def cmd_simulate(paths, out: Path | None, crop: bool, split: bool = False) -> int:
     if not paths:
-        log("[!] 用法：python -m clipkit simulate <图片目录> [-o 输出.png]")
+        log("[!] 用法：python -m clipkit simulate <图片目录> [-o 输出.png] [--split]")
         return 2
 
     target = Path(paths[0])
@@ -113,6 +145,9 @@ def cmd_simulate(paths, out: Path | None, crop: bool) -> int:
     if not files:
         log(f"[!] {target} 里没有可用图片")
         return 1
+
+    if split:
+        return _simulate_split(files, target, out, crop)
 
     log(f"离线拼接 {len(files)} 张（逐张裁剪={'开' if crop else '关'}），不接触剪贴板")
     for p in files:
@@ -138,6 +173,38 @@ def cmd_simulate(paths, out: Path | None, crop: bool) -> int:
 # ---------------------------------------------------------------- tray
 
 
+def _simulate_split(files, target: Path, out: Path | None, crop: bool) -> int:
+    """离线"分开保存"：文件名用每张图自己的修改时间（离线文件没有"拍摄时刻"）。"""
+    folder = out if out is not None else (target if target.is_dir() else target.parent) / "_split"
+    log(f"离线分开保存 {len(files)} 张（逐张裁剪={'开' if crop else '关'}）→ {folder}")
+
+    shots = []
+    for path in files:
+        try:
+            with Image.open(path) as im:
+                image = im.convert("RGB")
+        except Exception as e:  # noqa: BLE001
+            log(f"  [!] 跳过 {path.name}：{type(e).__name__}: {e}")
+            continue
+        if crop:
+            image = process_page_image(image)
+        shots.append(Shot(image, path.stat().st_mtime))
+
+    if not shots:
+        log("[!] 没有可保存的图片")
+        return 1
+
+    try:
+        written = exporter.save_shots(shots, folder)
+    except Exception as e:  # noqa: BLE001
+        log(f"[!] 保存失败：{type(e).__name__}: {e}")
+        return 1
+
+    for path in written:
+        log(f"  - {path.name}")
+    log(f"  → 已分开保存 {len(written)} 张到 {folder}")
+    return 0
+
 def cmd_tray(mode: ImageMode, args) -> int:
     try:
         import pystray  # noqa: F401
@@ -147,14 +214,21 @@ def cmd_tray(mode: ImageMode, args) -> int:
 
     from .tray import TrayApp
 
+    settings = config.load()
+    process_on_enable = (bool(settings["process_on_enable"]) if args.process_on_enable is None
+                         else bool(args.process_on_enable))
+
     monitor = ClipboardMonitor(
         image_mode=mode,
         text_enabled=bool(args.text),
         crop_options=CropOptions(),
         crop_before_stitch=not args.no_crop_before_stitch,
+        process_on_enable=process_on_enable,
         log=log,
     )
     app = TrayApp(monitor, interval=args.interval, log=log, notify=not args.no_notify)
+    if args.save_dir:
+        app.save_dir = Path(args.save_dir)
     return app.run()
 
 
@@ -167,7 +241,7 @@ def main(argv=None) -> int:
     if args.command == "doctor":
         return cmd_doctor()
     if args.command == "simulate":
-        return cmd_simulate(args.paths, args.out, crop=not args.no_crop)
+        return cmd_simulate(args.paths, args.out, crop=not args.no_crop, split=args.split)
 
     mode = {"stitch": ImageMode.STITCH, "crop": ImageMode.CROP}.get(args.command, ImageMode.OFF)
     return cmd_tray(mode, args)
