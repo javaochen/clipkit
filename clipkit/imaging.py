@@ -1,15 +1,23 @@
 """图像处理：去空白裁剪 + 纵向拼接（纯函数，不碰剪贴板、不碰托盘）。
 
-裁剪结果与旧实现（clip2line_cut&$.py / line_image.py）**逐像素等价**：
-灰度权重与运算顺序、阈值判定、以及"先整体去边框、再二次过滤行/列"的两段式裁剪
-全部照旧。唯一的实现改动是把两处 O(H+W) 的对象爆炸搬掉了——
+**"空白"的定义**（对一条行/列，g 是它所有像素的灰度）：
 
-旧写法会为每一行/每一列各建一个 numpy 数组，再 vstack / concatenate 整块复制：
-    final_rows = [arr[y:y+1] for y in range(H) if depth[y] >= thr]
-    np.vstack(final_rows)
-1920x1080 的截图就是 1080 个行数组 + 1920 个列数组，这是内存峰值和卡顿的主要来源。
-新写法用布尔掩码一次取完：
-    arr[depth >= thr]
+    整条偏白：min(g) > 255 − depth_threshold      （没有比近白更暗的像素）
+    整条偏黑：max(g) ≤ black_threshold            （每个像素都黑）
+
+两者都算空白，都裁掉 —— 纯黑的行/列不是内容，和纯白一样该去掉。
+
+**极细空白保留**：夹在内容之间、只有 1 像素宽的空白线（黑白同理）会留下当分隔线，
+否则整条删掉会让上下两段内容粘在一起。只有连续 ≥ min_blank_run(=2) 像素的空白才删。
+
+与旧实现（clip2line_cut&$.py / line_image.py）的关系：两段式裁剪结构、灰度权重、
+运算顺序、阈值判定全部照旧，所以
+    remove_blank_rows(..., black_threshold=-1, min_blank_run=1)
+能逐像素复现旧行为（tests/test_legacy_equivalence.py 就是这么对拍的）。
+
+新写法另外把两处 O(H+W) 的对象爆炸搬掉了——旧写法会为每一行/每一列各建一个 numpy
+数组再 vstack / concatenate 整块复制（1920x1080 就是 1080 个行数组 + 1920 个列数组），
+这是内存峰值和卡顿的主要来源；新写法用布尔掩码一次取完。
 """
 
 from __future__ import annotations
@@ -20,6 +28,8 @@ from PIL import Image
 WHITE_THRESHOLD = 245
 DEPTH_THRESHOLD = 20
 MIN_SIZE = 8
+BLACK_THRESHOLD = 8     # 灰度 ≤ 这个值算"黑"；只认接近 0 的纯黑，不动深色主题(#1E1E1E=30)
+MIN_BLANK_RUN = 2       # 连续空白 ≥ 这么多像素才删；1 像素宽的空白线留作分隔
 
 
 def _as_rgb(img: Image.Image) -> Image.Image:
@@ -56,6 +66,56 @@ def max_depth_per_row(img: Image.Image) -> np.ndarray:
 
 def max_depth_per_column(img: Image.Image) -> np.ndarray:
     return depth_map(img).max(axis=0)
+
+
+def blank_mask(gray: np.ndarray, axis: int, depth_threshold: int = DEPTH_THRESHOLD,
+               black_threshold: int = BLACK_THRESHOLD) -> np.ndarray:
+    """True = 该行/列是空白：整条偏白 或 整条偏黑。
+
+    axis=1 → 逐行（对每行求最暗/最亮），axis=0 → 逐列。
+    """
+    darkest = gray.min(axis=axis)        # 这一条里最暗的像素
+    brightest = gray.max(axis=axis)      # 这一条里最亮的像素
+    too_bright = darkest > (255 - depth_threshold)   # 没有比"近白"更暗的像素
+    too_dark = brightest <= black_threshold          # 每个像素都黑
+    return too_bright | too_dark
+
+
+def _blank_runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """返回 mask 里连续 True 的区间 [(start, end), ...]（end 不含）。"""
+    runs: list[tuple[int, int]] = []
+    start = None
+    for index, value in enumerate(mask):
+        if value and start is None:
+            start = index
+        elif not value and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(mask)))
+    return runs
+
+
+def keep_mask(gray: np.ndarray, axis: int, depth_threshold: int = DEPTH_THRESHOLD,
+              black_threshold: int = BLACK_THRESHOLD,
+              min_blank_run: int = MIN_BLANK_RUN) -> np.ndarray:
+    """True = 这一行/列要保留。
+
+    空白都删；但"夹在内容之间、比 min_blank_run 更窄"的空白留作分隔线。
+    与首尾相连的空白照旧裁掉（那是外边距，不是分隔线）。
+    """
+    keep = ~blank_mask(gray, axis, depth_threshold, black_threshold)
+    if min_blank_run <= 1 or not keep.any():
+        return keep
+
+    first = int(np.argmax(keep))
+    last = len(keep) - 1 - int(np.argmax(keep[::-1]))
+    for start, end in _blank_runs(~keep):
+        if start <= first or end > last:      # 外边距：照旧删
+            continue
+        if end - start < min_blank_run:       # 夹在内容之间的极细空白：留
+            keep[start:end] = True
+    return keep
 
 
 def find_content_bbox(img: Image.Image, white_threshold: int = WHITE_THRESHOLD):
@@ -104,14 +164,19 @@ def crop_non_white(img: Image.Image, white_threshold: int = WHITE_THRESHOLD,
 
 
 def remove_blank_rows(img: Image.Image, depth_threshold: int = DEPTH_THRESHOLD,
-                      min_row_keep: int = 1) -> Image.Image:
-    """删掉整体为空白（深度不足）的行。"""
+                      min_row_keep: int = 1, black_threshold: int = BLACK_THRESHOLD,
+                      min_blank_run: int = MIN_BLANK_RUN) -> Image.Image:
+    """删掉整体为空白（整条偏白或整条偏黑）的行。
+
+    夹在内容之间、1 像素宽的空白线保留当分隔线（min_blank_run 可调）。
+    复现旧行为：black_threshold=-1, min_blank_run=1。
+    """
     img = _as_rgb(img)
     if img.width == 0 or img.height == 0:
         return img
 
-    row_depth = max_depth_per_row(img)
-    keep_rows = np.where(row_depth >= depth_threshold)[0]
+    gray = gray_map(img)
+    keep_rows = np.where(~blank_mask(gray, 1, depth_threshold, black_threshold))[0]
     if keep_rows.size == 0:
         return img.crop((0, 0, img.width, min(img.height, max(1, min_row_keep))))
 
@@ -119,30 +184,37 @@ def remove_blank_rows(img: Image.Image, depth_threshold: int = DEPTH_THRESHOLD,
     arr = np.asarray(img, dtype=np.uint8)[top:bottom]
 
     # 第二段：在裁掉的上下边界之内再逐行判定（旧实现就是两段式）
-    cropped_depth = max_depth_per_row(Image.fromarray(arr))
-    out = arr[cropped_depth >= depth_threshold]      # ← 一行代替 H 个行数组 + vstack
+    keep = keep_mask(gray_map(Image.fromarray(arr)), 1, depth_threshold,
+                     black_threshold, min_blank_run)
+    out = arr[keep]                                  # ← 一行代替 H 个行数组 + vstack
     if out.shape[0] < min_row_keep:
         out = arr[:min(min_row_keep, arr.shape[0])]
     return Image.fromarray(np.ascontiguousarray(out, dtype=np.uint8))
 
 
 def remove_blank_columns(img: Image.Image, depth_threshold: int = DEPTH_THRESHOLD,
-                         min_col_keep: int = 1) -> Image.Image:
-    """删掉整体为空白（深度不足）的列。"""
+                         min_col_keep: int = 1, black_threshold: int = BLACK_THRESHOLD,
+                         min_blank_run: int = MIN_BLANK_RUN) -> Image.Image:
+    """删掉整体为空白（整条偏白或整条偏黑）的列。
+
+    夹在内容之间、1 像素宽的空白线保留当分隔线（min_blank_run 可调）。
+    复现旧行为：black_threshold=-1, min_blank_run=1。
+    """
     img = _as_rgb(img)
     if img.width == 0 or img.height == 0:
         return img
 
-    col_depth = max_depth_per_column(img)
-    keep_cols = np.where(col_depth >= depth_threshold)[0]
+    gray = gray_map(img)
+    keep_cols = np.where(~blank_mask(gray, 0, depth_threshold, black_threshold))[0]
     if keep_cols.size == 0:
         return img.crop((0, 0, min(img.width, max(1, min_col_keep)), img.height))
 
     left, right = int(keep_cols.min()), int(keep_cols.max()) + 1
     arr = np.asarray(img, dtype=np.uint8)[:, left:right]
 
-    cropped_depth = max_depth_per_column(Image.fromarray(arr))
-    out = arr[:, cropped_depth >= depth_threshold]   # ← 一行代替 W 个列数组 + concatenate
+    keep = keep_mask(gray_map(Image.fromarray(arr)), 0, depth_threshold,
+                     black_threshold, min_blank_run)
+    out = arr[:, keep]                               # ← 一行代替 W 个列数组 + concatenate
     if out.shape[1] < min_col_keep:
         out = arr[:, :min(min_col_keep, arr.shape[1])]
     return Image.fromarray(np.ascontiguousarray(out, dtype=np.uint8))
@@ -150,12 +222,18 @@ def remove_blank_columns(img: Image.Image, depth_threshold: int = DEPTH_THRESHOL
 
 def process_page_image(img: Image.Image, white_threshold: int = WHITE_THRESHOLD,
                        depth_threshold: int = DEPTH_THRESHOLD,
-                       min_size: int = MIN_SIZE) -> Image.Image:
-    """完整裁剪管线：去四周白边 → 删空白行 → 删空白列。"""
+                       min_size: int = MIN_SIZE, black_threshold: int = BLACK_THRESHOLD,
+                       min_blank_run: int = MIN_BLANK_RUN) -> Image.Image:
+    """完整裁剪管线：去四周白边 → 删空白行 → 删空白列。
+
+    空白 = 整条偏白或整条偏黑（见模块说明）；1 像素宽的空白线留作分隔线。
+    """
     img = _as_rgb(img)
     img = crop_non_white(img, white_threshold=white_threshold, min_size=min_size)
-    img = remove_blank_rows(img, depth_threshold=depth_threshold, min_row_keep=min_size)
-    img = remove_blank_columns(img, depth_threshold=depth_threshold, min_col_keep=min_size)
+    img = remove_blank_rows(img, depth_threshold=depth_threshold, min_row_keep=min_size,
+                            black_threshold=black_threshold, min_blank_run=min_blank_run)
+    img = remove_blank_columns(img, depth_threshold=depth_threshold, min_col_keep=min_size,
+                               black_threshold=black_threshold, min_blank_run=min_blank_run)
     return img
 
 

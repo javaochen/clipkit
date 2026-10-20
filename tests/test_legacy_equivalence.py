@@ -21,6 +21,10 @@ APP_DIR = Path(__file__).resolve().parents[2]
 LEGACY_CROP = APP_DIR / "clip2line_cut&$.py"
 LEGACY_STITCH = APP_DIR / "copy_images.py"
 
+# 旧行为 = 不裁纯黑（black_threshold=-1）+ 不保护 1 像素细线（min_blank_run=1）。
+# 对拍时必须显式关掉新能力，才能保证"除了新增能力，原有裁剪逐像素不变"。
+OLD_BEHAVIOUR = {"black_threshold": -1, "min_blank_run": 1}
+
 
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -52,11 +56,14 @@ class CropEquivalenceTests(unittest.TestCase):
                 _assert_same(self, self.legacy.crop_non_white(a),
                              imaging.crop_non_white(b), f"{name}/crop_non_white")
                 _assert_same(self, self.legacy.remove_blank_rows(a),
-                             imaging.remove_blank_rows(b), f"{name}/remove_blank_rows")
+                             imaging.remove_blank_rows(b, **OLD_BEHAVIOUR),
+                             f"{name}/remove_blank_rows")
                 _assert_same(self, self.legacy.remove_blank_columns(a),
-                             imaging.remove_blank_columns(b), f"{name}/remove_blank_columns")
+                             imaging.remove_blank_columns(b, **OLD_BEHAVIOUR),
+                             f"{name}/remove_blank_columns")
                 _assert_same(self, self.legacy.process_page_image(a),
-                             imaging.process_page_image(b), f"{name}/process_page_image")
+                             imaging.process_page_image(b, **OLD_BEHAVIOUR),
+                             f"{name}/process_page_image")
 
     def test_safe_crop_box_matches(self):
         for w, h in [(0, 0), (1, 1), (7, 7), (8, 8), (100, 50), (50, 100)]:

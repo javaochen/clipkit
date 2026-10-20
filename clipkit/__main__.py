@@ -29,7 +29,8 @@ from PIL import Image
 from . import __version__, config, exporter
 from .clipboard import Win32Clipboard
 from .exporter import Shot
-from .imaging import process_page_image, stitch_image_files
+from .imaging import (BLACK_THRESHOLD, MIN_BLANK_RUN, process_page_image,
+                      stitch_image_files)
 from .monitor import ClipboardMonitor, CropOptions, ImageMode
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff", ".gif"}
@@ -62,6 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-crop", action="store_true", help="simulate：只拼接不裁剪")
     p.add_argument("--split", action="store_true",
                    help="simulate：逐张分开保存（此时 -o 视为输出文件夹）")
+    p.add_argument("--black-threshold", type=int, default=BLACK_THRESHOLD, metavar="N",
+                   help=f"simulate/托盘：整条灰度 ≤ N 视为纯黑空白裁掉（默认 {BLACK_THRESHOLD}；-1 = 不裁黑）")
+    p.add_argument("--min-blank-run", type=int, default=MIN_BLANK_RUN, metavar="N",
+                   help=f"simulate/托盘：连续空白 ≥ N 像素才裁，更细的留作分隔线（默认 {MIN_BLANK_RUN}）")
     p.add_argument("--text", action="store_true", help="启动时开启文本公式格式化")
     p.add_argument("--interval", type=float, default=0.25, help="剪贴板轮询间隔秒（默认 0.25）")
     p.add_argument("--no-crop-before-stitch", action="store_true", help="拼接前不逐张裁剪")
@@ -127,10 +132,13 @@ def cmd_doctor() -> int:
 # ---------------------------------------------------------------- simulate
 
 
-def cmd_simulate(paths, out: Path | None, crop: bool, split: bool = False) -> int:
+def cmd_simulate(paths, out: Path | None, crop: bool, split: bool = False,
+                 crop_kwargs: dict | None = None) -> int:
     if not paths:
         log("[!] 用法：python -m clipkit simulate <图片目录> [-o 输出.png] [--split]")
         return 2
+
+    crop_kwargs = dict(crop_kwargs or {})
 
     target = Path(paths[0])
     if target.is_dir():
@@ -147,13 +155,13 @@ def cmd_simulate(paths, out: Path | None, crop: bool, split: bool = False) -> in
         return 1
 
     if split:
-        return _simulate_split(files, target, out, crop)
+        return _simulate_split(files, target, out, crop, crop_kwargs)
 
     log(f"离线拼接 {len(files)} 张（逐张裁剪={'开' if crop else '关'}），不接触剪贴板")
     for p in files:
         log(f"  - {p.name}")
 
-    result = stitch_image_files(files, crop=crop)
+    result = stitch_image_files(files, crop=crop, **crop_kwargs)
     if result is None:
         log("[!] 拼接失败：没有可用图片")
         return 1
@@ -173,7 +181,8 @@ def cmd_simulate(paths, out: Path | None, crop: bool, split: bool = False) -> in
 # ---------------------------------------------------------------- tray
 
 
-def _simulate_split(files, target: Path, out: Path | None, crop: bool) -> int:
+def _simulate_split(files, target: Path, out: Path | None, crop: bool,
+                    crop_kwargs: dict | None = None) -> int:
     """离线"分开保存"：文件名用每张图自己的修改时间（离线文件没有"拍摄时刻"）。"""
     folder = out if out is not None else (target if target.is_dir() else target.parent) / "_split"
     log(f"离线分开保存 {len(files)} 张（逐张裁剪={'开' if crop else '关'}）→ {folder}")
@@ -187,7 +196,7 @@ def _simulate_split(files, target: Path, out: Path | None, crop: bool) -> int:
             log(f"  [!] 跳过 {path.name}：{type(e).__name__}: {e}")
             continue
         if crop:
-            image = process_page_image(image)
+            image = process_page_image(image, **(crop_kwargs or {}))
         shots.append(Shot(image, path.stat().st_mtime))
 
     if not shots:
@@ -221,7 +230,8 @@ def cmd_tray(mode: ImageMode, args) -> int:
     monitor = ClipboardMonitor(
         image_mode=mode,
         text_enabled=bool(args.text),
-        crop_options=CropOptions(),
+        crop_options=CropOptions(black_threshold=args.black_threshold,
+                                 min_blank_run=args.min_blank_run),
         crop_before_stitch=not args.no_crop_before_stitch,
         process_on_enable=process_on_enable,
         log=log,
@@ -241,7 +251,10 @@ def main(argv=None) -> int:
     if args.command == "doctor":
         return cmd_doctor()
     if args.command == "simulate":
-        return cmd_simulate(args.paths, args.out, crop=not args.no_crop, split=args.split)
+        crop_kwargs = {"black_threshold": args.black_threshold,
+                       "min_blank_run": args.min_blank_run}
+        return cmd_simulate(args.paths, args.out, crop=not args.no_crop,
+                            split=args.split, crop_kwargs=crop_kwargs)
 
     mode = {"stitch": ImageMode.STITCH, "crop": ImageMode.CROP}.get(args.command, ImageMode.OFF)
     return cmd_tray(mode, args)

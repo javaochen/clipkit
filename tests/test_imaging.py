@@ -5,6 +5,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from PIL import ImageDraw
+
 from clipkit import imaging
 from tests import support
 
@@ -95,6 +97,75 @@ class StitchTests(unittest.TestCase):
             p1 = Path(d) / "a.png"
             support.block(120, 80, (20, 15, 100, 65)).save(p1)
             self.assertEqual(imaging.stitch_image_files([p1], crop=False).size, (120, 80))
+
+
+class BlackBlankTests(unittest.TestCase):
+    """空白 = 整条偏白 或 整条偏黑；1 像素宽的空白线（黑白同理）留作分隔线。"""
+
+    @staticmethod
+    def _hbar(band_color=(0, 0, 0), band_rows=22, width=100, content=20):
+        """上内容块 + 满宽色带 + 下内容块（不留白边，便于算准尺寸）。"""
+        height = content + band_rows + content
+        img = support.blank(width, height, (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        for y0 in (0, content + band_rows):
+            d.rectangle((10, y0, width - 11, y0 + content - 1), fill=(20, 20, 20))
+        d.rectangle((0, content, width - 1, content + band_rows - 1), fill=band_color)
+        return img
+
+    @staticmethod
+    def _vbar(band_color=(0, 0, 0), band_cols=22, height=100, content=20):
+        """左内容块 + 满高色带 + 右内容块（不留白边）。"""
+        width = content + band_cols + content
+        img = support.blank(width, height, (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        for x0 in (0, content + band_cols):
+            d.rectangle((x0, 0, x0 + content - 1, height - 1), fill=(20, 20, 20))
+        d.rectangle((content, 0, content + band_cols - 1, height - 1), fill=band_color)
+        return img
+
+    def test_pure_black_band_is_cropped(self):
+        out = imaging.process_page_image(self._hbar((0, 0, 0), band_rows=22))
+        self.assertEqual(out.size, (80, 40))      # 22 行纯黑带被删
+
+    def test_pure_black_vertical_band_is_cropped(self):
+        out = imaging.process_page_image(self._vbar((0, 0, 0), band_cols=22))
+        self.assertEqual(out.size, (40, 100))     # 22 列纯黑带被删
+
+    def test_black_band_kept_when_black_removal_disabled(self):
+        out = imaging.process_page_image(self._hbar((0, 0, 0), band_rows=22),
+                                         black_threshold=-1, min_blank_run=1)
+        self.assertEqual(out.size, (100, 62))     # 旧行为：黑带保留
+
+    def test_dark_theme_background_is_not_treated_as_black(self):
+        # #1E1E1E 灰度 30 > 8，不该被当纯黑删掉（深色主题截图的命门）
+        out = imaging.process_page_image(self._hbar((30, 30, 30), band_rows=22))
+        self.assertEqual(out.size, (100, 62))
+
+    def test_one_pixel_black_line_survives(self):
+        out = imaging.process_page_image(self._hbar((0, 0, 0), band_rows=1))
+        self.assertEqual(out.size, (100, 41))     # 1 像素黑线留作分隔
+
+    def test_one_pixel_white_line_survives(self):
+        out = imaging.process_page_image(self._hbar((255, 255, 255), band_rows=1))
+        self.assertEqual(out.size, (80, 41))      # 白线同理
+
+    def test_thin_line_removed_when_min_blank_run_is_one(self):
+        out = imaging.process_page_image(self._hbar((0, 0, 0), band_rows=1),
+                                         min_blank_run=1)
+        self.assertEqual(out.size, (80, 40))      # 不保护细线时照旧删掉
+
+    def test_band_with_a_light_pixel_is_content(self):
+        img = self._hbar((0, 0, 0), band_rows=22)
+        img.putpixel((50, 30), (255, 255, 255))   # 黑带里出现一个白点
+        out = imaging.process_page_image(img)
+        self.assertEqual(out.size, (100, 41))     # 整条不再"纯黑" → 只有这一行留下
+
+    def test_all_black_falls_back_like_all_white(self):
+        black = support.blank(60, 40, (0, 0, 0))
+        white = support.blank(60, 40, (255, 255, 255))
+        self.assertEqual(imaging.process_page_image(black).size,
+                         imaging.process_page_image(white).size)
 
 
 if __name__ == "__main__":
