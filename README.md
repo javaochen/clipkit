@@ -213,3 +213,7 @@ python launcher.py start clip --takeover   # 启动 clip 时顺手接管
 * 分开保存的图片默认是 PNG（无损，和剪贴板一致），扩展名目前不可配。
 * `pdf_manage/line_cropper.py`、`pdf_reader` 按约定**不改**；它们里面那份裁剪代码是
   旧实现的拷贝，将来想收编可以改成本库的消费者。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。
