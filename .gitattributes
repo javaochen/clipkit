@@ -1,0 +1,12 @@
+# 统一换行处理：仓库里存 LF，检出时按平台转换
+* text=auto
+
+*.py   text
+*.md   text
+*.toml text
+*.txt  text
+
+# 图片等二进制不要当文本处理
+*.png  binary
+*.jpg  binary
+*.bmp  binary

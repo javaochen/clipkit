@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw
 
 from clipkit.clipboard import ClipKind
 
-# 临时目录放在仓库内：DSH 沙箱（workspace-write）下系统临时目录可能不可写
+# 临时目录放在仓库内：受限沙箱（workspace-write）下系统临时目录可能不可写
 TMP_ROOT = Path(__file__).resolve().parent / "_tmp"
 _counter = itertools.count()
 
@@ -25,7 +25,7 @@ _counter = itertools.count()
 def temp_dir():
     """工作区内的临时目录，退出时删掉。
 
-    注意：这里刻意**不用 tempfile.mkdtemp** —— 它建出来的目录在 DSH 沙箱下
+    注意：这里刻意**不用 tempfile.mkdtemp** —— 它建出来的目录在受限沙箱下
     不可写（实测 PermissionError），普通 os.mkdir 的目录才正常。
     """
     TMP_ROOT.mkdir(parents=True, exist_ok=True)

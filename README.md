@@ -119,7 +119,7 @@ clipkit/
 │  ├─ tray.py         pystray 托盘：模式单选 + 主操作 + 分开保存 + 气泡提示
 │  ├─ win32_tweaks.py Windows 补丁：托盘起步降级容错 / 右键菜单置顶
 │  └─ __main__.py     CLI：tray / stitch / crop / simulate / doctor
-├─ tests/             90+ 个测试，含与旧实现的逐像素对拍
+├─ tests/             106 个测试，含与旧实现的逐像素对拍
 ├─ tools/bench_imaging.py   耗时 / 峰值内存基准（可 --compare 旧实现 A/B）
 └─ requirements.txt
 ```
