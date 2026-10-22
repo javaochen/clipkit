@@ -23,7 +23,9 @@ LEGACY_STITCH = APP_DIR / "copy_images.py"
 
 # 旧行为 = 不裁纯黑（black_threshold=-1）+ 不保护 1 像素细线（min_blank_run=1）。
 # 对拍时必须显式关掉新能力，才能保证"除了新增能力，原有裁剪逐像素不变"。
-OLD_BEHAVIOUR = {"black_threshold": -1, "min_blank_run": 1}
+OLD_AXIS = {"black_threshold": -1, "min_blank_run": 1}
+# 整条管线还要再多关一项：单趟（旧实现就是行→列各扫一遍）
+OLD_PIPELINE = {**OLD_AXIS, "refine_passes": 1}
 
 
 def _load(name: str, path: Path):
@@ -56,13 +58,13 @@ class CropEquivalenceTests(unittest.TestCase):
                 _assert_same(self, self.legacy.crop_non_white(a),
                              imaging.crop_non_white(b), f"{name}/crop_non_white")
                 _assert_same(self, self.legacy.remove_blank_rows(a),
-                             imaging.remove_blank_rows(b, **OLD_BEHAVIOUR),
+                             imaging.remove_blank_rows(b, **OLD_AXIS),
                              f"{name}/remove_blank_rows")
                 _assert_same(self, self.legacy.remove_blank_columns(a),
-                             imaging.remove_blank_columns(b, **OLD_BEHAVIOUR),
+                             imaging.remove_blank_columns(b, **OLD_AXIS),
                              f"{name}/remove_blank_columns")
                 _assert_same(self, self.legacy.process_page_image(a),
-                             imaging.process_page_image(b, **OLD_BEHAVIOUR),
+                             imaging.process_page_image(b, **OLD_PIPELINE),
                              f"{name}/process_page_image")
 
     def test_safe_crop_box_matches(self):

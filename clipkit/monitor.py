@@ -35,8 +35,8 @@ from . import exporter
 from .clipboard import ClipKind, Win32Clipboard
 from .exporter import Shot
 from .formula import format_math_text, has_formula_markers
-from .imaging import (BLACK_THRESHOLD, MIN_BLANK_RUN, process_page_image,
-                      stitch_vertical_centered)
+from .imaging import (BLACK_THRESHOLD, MIN_BLANK_RUN, REFINE_PASSES,
+                      process_page_image, stitch_vertical_centered)
 
 
 class ImageMode(enum.Enum):
@@ -52,6 +52,7 @@ class CropOptions:
     min_size: int = 8
     black_threshold: int = BLACK_THRESHOLD   # 整条灰度 ≤ 它算"纯黑空白"；-1 = 不删黑（旧行为）
     min_blank_run: int = MIN_BLANK_RUN       # 连续空白 ≥ 这么多像素才删；1 = 不保护细线
+    refine_passes: int = REFINE_PASSES       # 行/列过滤最多扫几趟；1 = 旧实现的单趟
 
 
 @dataclass
@@ -234,6 +235,7 @@ class ClipboardMonitor:
                 min_size=self.crop_options.min_size,
                 black_threshold=self.crop_options.black_threshold,
                 min_blank_run=self.crop_options.min_blank_run,
+                refine_passes=self.crop_options.refine_passes,
             )
 
         if self.image_mode is ImageMode.CROP:

@@ -30,6 +30,7 @@ DEPTH_THRESHOLD = 20
 MIN_SIZE = 8
 BLACK_THRESHOLD = 8     # 灰度 ≤ 这个值算"黑"；只认接近 0 的纯黑，不动深色主题(#1E1E1E=30)
 MIN_BLANK_RUN = 2       # 连续空白 ≥ 这么多像素才删；1 像素宽的空白线留作分隔
+REFINE_PASSES = 2       # 行/列过滤最多扫几趟：2 = 先删行删列，再补一趟（单趟会残留对向白边）
 
 
 def _as_rgb(img: Image.Image) -> Image.Image:
@@ -223,17 +224,28 @@ def remove_blank_columns(img: Image.Image, depth_threshold: int = DEPTH_THRESHOL
 def process_page_image(img: Image.Image, white_threshold: int = WHITE_THRESHOLD,
                        depth_threshold: int = DEPTH_THRESHOLD,
                        min_size: int = MIN_SIZE, black_threshold: int = BLACK_THRESHOLD,
-                       min_blank_run: int = MIN_BLANK_RUN) -> Image.Image:
-    """完整裁剪管线：去四周白边 → 删空白行 → 删空白列。
+                       min_blank_run: int = MIN_BLANK_RUN,
+                       refine_passes: int = REFINE_PASSES) -> Image.Image:
+    """完整裁剪管线：去四周白边 → (删空白行 → 删空白列) × refine_passes。
 
     空白 = 整条偏白或整条偏黑（见模块说明）；1 像素宽的空白线留作分隔线。
+
+    为什么要多趟：row 判据看的是整行。若图里有一条**贯通全高**的边（比如右侧到底的黑边），
+    上下白边所在的那些行因为含着这条边的像素而"不算空白"，于是单趟之后对向白边残留。
+    删掉列之后再扫一趟行，就能把残留收掉。尺寸不再变化时提前结束，所以多数图只多扫一趟。
+    refine_passes=1 即旧实现的单趟结构。
     """
     img = _as_rgb(img)
     img = crop_non_white(img, white_threshold=white_threshold, min_size=min_size)
-    img = remove_blank_rows(img, depth_threshold=depth_threshold, min_row_keep=min_size,
-                            black_threshold=black_threshold, min_blank_run=min_blank_run)
-    img = remove_blank_columns(img, depth_threshold=depth_threshold, min_col_keep=min_size,
-                               black_threshold=black_threshold, min_blank_run=min_blank_run)
+
+    for _ in range(max(1, refine_passes)):
+        before = img.size
+        img = remove_blank_rows(img, depth_threshold=depth_threshold, min_row_keep=min_size,
+                                black_threshold=black_threshold, min_blank_run=min_blank_run)
+        img = remove_blank_columns(img, depth_threshold=depth_threshold, min_col_keep=min_size,
+                                   black_threshold=black_threshold, min_blank_run=min_blank_run)
+        if img.size == before:
+            break
     return img
 
 

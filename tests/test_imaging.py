@@ -167,6 +167,17 @@ class BlackBlankTests(unittest.TestCase):
         self.assertEqual(imaging.process_page_image(black).size,
                          imaging.process_page_image(white).size)
 
+    def test_extra_pass_cleans_margins_left_by_full_height_border(self):
+        """贯通全高的右边会让单趟漏掉上下白边；多扫一趟（默认）就收干净。"""
+        img = support.blank(80, 70, (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        for y0 in (10, 40):
+            d.rectangle((5, y0, 69, y0 + 19), fill=(20, 20, 20))
+        d.rectangle((70, 0, 79, 69), fill=(0, 0, 0))     # 贯通全高的右边
+
+        self.assertEqual(imaging.process_page_image(img, refine_passes=1).size, (65, 70))
+        self.assertEqual(imaging.process_page_image(img, refine_passes=2).size, (65, 40))
+
 
 if __name__ == "__main__":
     unittest.main()

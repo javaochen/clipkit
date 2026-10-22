@@ -29,8 +29,8 @@ from PIL import Image
 from . import __version__, config, exporter
 from .clipboard import Win32Clipboard
 from .exporter import Shot
-from .imaging import (BLACK_THRESHOLD, MIN_BLANK_RUN, process_page_image,
-                      stitch_image_files)
+from .imaging import (BLACK_THRESHOLD, MIN_BLANK_RUN, REFINE_PASSES,
+                      process_page_image, stitch_image_files)
 from .monitor import ClipboardMonitor, CropOptions, ImageMode
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff", ".gif"}
@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"simulate/托盘：整条灰度 ≤ N 视为纯黑空白裁掉（默认 {BLACK_THRESHOLD}；-1 = 不裁黑）")
     p.add_argument("--min-blank-run", type=int, default=MIN_BLANK_RUN, metavar="N",
                    help=f"simulate/托盘：连续空白 ≥ N 像素才裁，更细的留作分隔线（默认 {MIN_BLANK_RUN}）")
+    p.add_argument("--refine-passes", type=int, default=REFINE_PASSES, metavar="N",
+                   help=f"simulate/托盘：行/列过滤最多扫几趟（默认 {REFINE_PASSES}；1 = 旧实现的单趟）")
     p.add_argument("--text", action="store_true", help="启动时开启文本公式格式化")
     p.add_argument("--interval", type=float, default=0.25, help="剪贴板轮询间隔秒（默认 0.25）")
     p.add_argument("--no-crop-before-stitch", action="store_true", help="拼接前不逐张裁剪")
@@ -231,7 +233,8 @@ def cmd_tray(mode: ImageMode, args) -> int:
         image_mode=mode,
         text_enabled=bool(args.text),
         crop_options=CropOptions(black_threshold=args.black_threshold,
-                                 min_blank_run=args.min_blank_run),
+                                 min_blank_run=args.min_blank_run,
+                                 refine_passes=args.refine_passes),
         crop_before_stitch=not args.no_crop_before_stitch,
         process_on_enable=process_on_enable,
         log=log,
@@ -252,7 +255,8 @@ def main(argv=None) -> int:
         return cmd_doctor()
     if args.command == "simulate":
         crop_kwargs = {"black_threshold": args.black_threshold,
-                       "min_blank_run": args.min_blank_run}
+                       "min_blank_run": args.min_blank_run,
+                       "refine_passes": args.refine_passes}
         return cmd_simulate(args.paths, args.out, crop=not args.no_crop,
                             split=args.split, crop_kwargs=crop_kwargs)
 
