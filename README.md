@@ -78,7 +78,7 @@ pip install -r requirements.txt
 ## 运行
 
 ```powershell
-python -m clipkit                 # 启动托盘（默认图片功能关闭，不会动剪贴板）
+python -m clipkit                 # 启动托盘：所有功能默认关闭（灰色图标），要用时右键菜单开启
 python -m clipkit stitch          # 启动并直接进入拼接模式
 python -m clipkit crop --text     # 即时裁剪 + 文本公式格式化
 python -m clipkit simulate .\shots -o all.png   # 离线：逐张裁剪后拼接，完全不碰剪贴板

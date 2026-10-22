@@ -361,5 +361,37 @@ class SaveSplitTests(unittest.TestCase):
             self.assertTrue(monitor.any_enabled())
 
 
+# ---------------------------------------------------------------- 默认全关
+
+
+class DefaultOffTests(unittest.TestCase):
+    """启动时默认不开启任何功能：不裁剪、不格式化、也不动剪贴板里已有的内容。"""
+
+    def test_default_monitor_has_no_feature_enabled(self):
+        backend = FakeClipboard()
+        monitor = ClipboardMonitor(backend, log=None)
+        self.assertIs(monitor.image_mode, ImageMode.OFF)
+        self.assertFalse(monitor.text_enabled)
+        self.assertFalse(monitor.any_enabled())
+
+    def test_default_startup_leaves_existing_image_alone(self):
+        backend = FakeClipboard()
+        backend.user_copy_image(block(200, 150, (40, 30, 160, 120)))
+        monitor = ClipboardMonitor(backend, log=None)   # 默认全关（含 process_on_enable=True）
+
+        r = monitor.startup_tick()
+        self.assertEqual(backend.writes, [])
+        self.assertEqual(monitor.pending(), 0)
+        self.assertEqual(r.action, "skipped")
+
+    def test_default_startup_leaves_existing_text_alone(self):
+        backend = FakeClipboard()
+        backend.user_copy_text(r"\(x^2\)")
+        monitor = ClipboardMonitor(backend, log=None)
+
+        monitor.startup_tick()
+        self.assertEqual(backend.writes, [])
+
+
 if __name__ == "__main__":
     unittest.main()
